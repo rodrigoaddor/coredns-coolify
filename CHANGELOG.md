@@ -4,6 +4,7 @@
 
 First release of the standalone CoreDNS plugin:
 
+- Connect to Coolify through an optional fixed IP while preserving the HTTPS hostname.
 - Discover domains from one Coolify instance and multiple servers.
 - Override each server's targets with IPv4, IPv6, or a hostname.
 - Answer A, AAAA, and CNAME queries.

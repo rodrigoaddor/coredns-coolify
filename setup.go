@@ -3,7 +3,9 @@ package coolify
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -68,6 +70,7 @@ func setup(controller *caddy.Controller) error {
 func parse(p *caddy.Controller) (*Coolify, error) {
 	c := &Coolify{interval: time.Minute, ttl: 60, byServer: map[string]records{}, snapshot: records{}}
 	timeout := 10 * time.Second
+	var connectIP netip.Addr
 	seen := map[string]bool{}
 	count := 0
 	for p.Next() {
@@ -128,6 +131,15 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 				} else {
 					c.token = args[0]
 				}
+			case "connect_ip":
+				if len(args) != 1 {
+					return nil, p.ArgErr()
+				}
+				ip, err := netip.ParseAddr(args[0])
+				if err != nil || ip.Zone() != "" {
+					return nil, p.Err("connect_ip must be an IPv4 or IPv6 address without a port or zone")
+				}
+				connectIP = ip.Unmap()
 			case "refresh", "timeout":
 				if len(args) != 1 {
 					return nil, p.ArgErr()
@@ -165,6 +177,20 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 		return nil, fmt.Errorf("a nonempty API token is required via token or token_env")
 	}
 	c.zones = plugin.Zones(plugin.OriginsFromArgsOrServerBlock(nil, p.ServerBlockKeys))
-	c.client = &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if connectIP.IsValid() {
+		// Only change the socket destination. The URL still supplies the HTTP
+		// Host header, TLS server name, and certificate verification hostname.
+		transport.Proxy = nil
+		dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(connectIP.String(), port))
+		}
+	}
+	c.client = &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return c, nil
 }

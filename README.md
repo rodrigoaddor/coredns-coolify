@@ -55,6 +55,7 @@ dig @127.0.0.1 -p 1053 app.example.com A
 ```
 
 - `coolify URL`: one instance origin. A bare hostname defaults to HTTPS. Explicit HTTP is supported. Paths, credentials, queries, and fragments are rejected.
+- `connect_ip IP`: connect directly to this IPv4 or IPv6 address while keeping the URL hostname for HTTPS and HTTP routing. The URL determines the port. When set, requests bypass environment HTTP proxies.
 - `token_env NAME`: read the bearer token from an environment variable at startup. Alternatively use `token VALUE`; exactly one token directive is required.
 - `server UUID [TARGET]`: repeat for each server. Without a target, each API row supplies its own address. A target overrides all rows for that server.
 - `refresh DURATION`: polling interval, default `1m`; must be positive.
@@ -62,6 +63,22 @@ dig @127.0.0.1 -p 1053 app.example.com A
 - `ttl SECONDS`: unsigned DNS TTL, default `60`; zero disables client caching.
 
 Create an API token in Coolify's **Keys & Tokens → API tokens** and enable API access. Tokens are sent in `Authorization: Bearer ...`, as required by the [Coolify domains endpoint](https://coolify.io/docs/api/endpoints/servers/get-domains-by-server-uuid). The plugin calls `GET /api/v1/servers/UUID/domains` for each configured server. HTTP redirects are refused to avoid forwarding credentials.
+
+## Connecting without DNS
+
+If Coolify's hostname depends on this CoreDNS instance for resolution, set `connect_ip` to an address reachable from the CoreDNS process:
+
+```corefile
+coolify https://cloud.example.com {
+    token_env COOLIFY_API_TOKEN
+    connect_ip 10.0.0.20
+    server server-uuid-one
+}
+```
+
+The plugin connects to `10.0.0.20` and uses `cloud.example.com` for the HTTP Host header, TLS server name, and certificate verification. This avoids a DNS dependency when starting CoreDNS. An explicit port in the URL, such as `https://cloud.example.com:8443`, is preserved.
+
+`connect_ip` controls the API connection. The optional target on each `server` directive controls the DNS records returned to clients.
 
 ## DNS and refresh behavior
 
