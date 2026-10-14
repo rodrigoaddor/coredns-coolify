@@ -17,7 +17,7 @@ coolify:github.com/rodrigoaddor/coredns-coolify
 Run in the CoreDNS checkout:
 
 ```sh
-go get github.com/rodrigoaddor/coredns-coolify@v1.0.0
+go get github.com/rodrigoaddor/coredns-coolify@v1.1.0
 go generate coredns.go
 go mod tidy
 go build -o coredns .
@@ -55,6 +55,7 @@ dig @127.0.0.1 -p 1053 app.example.com A
 ```
 
 - `coolify URL`: one instance origin. A bare hostname defaults to HTTPS. Explicit HTTP is supported. Paths, credentials, queries, and fragments are rejected.
+- `coolify_domain DOMAIN`: publish A/AAAA records for the Coolify dashboard using `connect_ip`, or the resolved IP addresses of the API URL when no connection override is set.
 - `connect_ip IP`: connect directly to this IPv4 or IPv6 address while keeping the URL hostname for HTTPS and HTTP routing. The URL determines the port. When set, requests bypass environment HTTP proxies.
 - `token_env NAME`: read the bearer token from an environment variable at startup. Alternatively use `token VALUE`; exactly one token directive is required.
 - `server UUID [TARGET]`: repeat for each server. Without a target, each API row supplies its own address. A target overrides all rows for that server.
@@ -72,6 +73,7 @@ If Coolify's hostname depends on this CoreDNS instance for resolution, set `conn
 coolify https://cloud.example.com {
     token_env COOLIFY_API_TOKEN
     connect_ip 10.0.0.20
+    coolify_domain cloud.example.com
     server server-uuid-one
 }
 ```
@@ -79,6 +81,10 @@ coolify https://cloud.example.com {
 The plugin connects to `10.0.0.20` and uses `cloud.example.com` for the HTTP Host header, TLS server name, and certificate verification. This avoids a DNS dependency when starting CoreDNS. An explicit port in the URL, such as `https://cloud.example.com:8443`, is preserved.
 
 `connect_ip` controls the API connection. The optional target on each `server` directive controls the DNS records returned to clients.
+
+`coolify_domain cloud.example.com` also publishes the dashboard itself as a DNS record. With the example above, it returns an A record for `10.0.0.20`, even when the API is unavailable. This explicit mapping takes precedence over resource records with the same name.
+
+Without `connect_ip`, the plugin uses the IP literal in the API URL or resolves its hostname through system DNS on each refresh. All resolved IPv4 and IPv6 addresses are published; failed or empty lookups retain the previous addresses. System DNS must be able to resolve the API hostname independently of this CoreDNS instance. These are the API access addresses, so a hostname behind a proxy publishes the proxy's addresses.
 
 ## DNS and refresh behavior
 

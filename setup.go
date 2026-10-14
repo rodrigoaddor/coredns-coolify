@@ -131,6 +131,15 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 				} else {
 					c.token = args[0]
 				}
+			case "coolify_domain":
+				if len(args) != 1 {
+					return nil, p.ArgErr()
+				}
+				name, err := domainName(args[0], false)
+				if err != nil {
+					return nil, p.Err(err.Error())
+				}
+				c.instanceDomain = name
 			case "connect_ip":
 				if len(args) != 1 {
 					return nil, p.ArgErr()
@@ -176,6 +185,7 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 	if strings.TrimSpace(c.token) == "" || strings.ContainsAny(c.token, "\r\n") {
 		return nil, fmt.Errorf("a nonempty API token is required via token or token_env")
 	}
+	c.connectIP = connectIP
 	c.zones = plugin.Zones(plugin.OriginsFromArgsOrServerBlock(nil, p.ServerBlockKeys))
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if connectIP.IsValid() {

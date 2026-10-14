@@ -3,6 +3,7 @@
     log
     coolify https://coolify.example.com {
         token_env COOLIFY_API_TOKEN
+        coolify_domain coolify.example.com
         server server-uuid-one
         server server-uuid-two 192.0.2.20
         server server-uuid-three edge.example.net

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -26,17 +27,21 @@ type records map[string][]target
 
 // Coolify is a CoreDNS handler. Its configuration is immutable after startup.
 type Coolify struct {
-	Next           plugin.Handler
-	baseURL, token string
-	servers        []server
-	zones          plugin.Zones
-	interval       time.Duration
-	ttl            uint32
-	client         *http.Client
-	refreshMu      sync.Mutex
-	mu             sync.RWMutex
-	byServer       map[string]records
-	snapshot       records
+	Next            plugin.Handler
+	baseURL, token  string
+	instanceDomain  string
+	connectIP       netip.Addr
+	instanceTargets []target
+	lookupIP        func(context.Context, string, string) ([]netip.Addr, error)
+	servers         []server
+	zones           plugin.Zones
+	interval        time.Duration
+	ttl             uint32
+	client          *http.Client
+	refreshMu       sync.Mutex
+	mu              sync.RWMutex
+	byServer        map[string]records
+	snapshot        records
 }
 
 func (c *Coolify) Name() string { return "coolify" }
@@ -82,6 +87,14 @@ func (c *Coolify) refresh(ctx context.Context) error {
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
 	var failures []string
+	if c.instanceDomain != "" {
+		ts, err := c.fetchInstanceTargets(ctx)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("Coolify domain %s: %v", c.instanceDomain, err))
+		} else {
+			c.instanceTargets = ts
+		}
+	}
 	for _, s := range c.servers {
 		fresh, err := c.fetch(ctx, s)
 		if err != nil {
@@ -98,6 +111,10 @@ func (c *Coolify) refresh(ctx context.Context) error {
 			}
 		}
 	}
+	// The explicitly configured instance domain takes precedence over resources.
+	if len(c.instanceTargets) > 0 {
+		merged[c.instanceDomain] = c.instanceTargets
+	}
 	c.mu.Lock()
 	c.snapshot = merged
 	c.mu.Unlock()
@@ -105,6 +122,48 @@ func (c *Coolify) refresh(ctx context.Context) error {
 		return fmt.Errorf("%s", strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+// fetchInstanceTargets uses the same destination configured for API access.
+// Coolify's server API may return an internal SSH hostname rather than its
+// public address, so it cannot reliably supply the dashboard's DNS records.
+func (c *Coolify) fetchInstanceTargets(ctx context.Context) ([]target, error) {
+	if c.connectIP.IsValid() {
+		return []target{{ip: c.connectIP}}, nil
+	}
+	u, err := url.Parse(c.baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Coolify URL")
+	}
+	if ip, err := netip.ParseAddr(u.Hostname()); err == nil {
+		return []target{{ip: ip.Unmap()}}, nil
+	}
+	lookup := c.lookupIP
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupNetIP
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.client.Timeout)
+	defer cancel()
+	ips, err := lookup(ctx, "ip", u.Hostname())
+	if err != nil {
+		return nil, fmt.Errorf("API hostname lookup failed")
+	}
+	ts := []target{}
+	seen := map[netip.Addr]bool{}
+	for _, ip := range ips {
+		if !ip.IsValid() || ip.Zone() != "" {
+			continue
+		}
+		ip = ip.Unmap()
+		if !seen[ip] {
+			ts = append(ts, target{ip: ip})
+			seen[ip] = true
+		}
+	}
+	if len(ts) == 0 {
+		return nil, fmt.Errorf("API hostname has no IP addresses")
+	}
+	return ts, nil
 }
 
 func (c *Coolify) fetch(ctx context.Context, s server) (records, error) {
