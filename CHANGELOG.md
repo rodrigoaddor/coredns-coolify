@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.0
+
+- Include target A/AAAA records alongside CNAMEs by following local aliases and resolving other targets through the next CoreDNS plugin.
+- Detect local CNAME loops and limit chain traversal to 16 names.
+
 ## 1.1.0
 
 - Add `connect_ip` to connect directly to an IPv4 or IPv6 address while preserving the API hostname for HTTPS verification and routing.

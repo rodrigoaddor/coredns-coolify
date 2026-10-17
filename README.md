@@ -17,7 +17,7 @@ coolify:github.com/rodrigoaddor/coredns-coolify
 Run in the CoreDNS checkout:
 
 ```sh
-go get github.com/rodrigoaddor/coredns-coolify@v1.1.0
+go get github.com/rodrigoaddor/coredns-coolify@v1.2.0
 go generate coredns.go
 go mod tidy
 go build -o coredns .
@@ -88,7 +88,14 @@ Without `connect_ip`, the plugin uses the IP literal in the API URL or resolves 
 
 ## DNS and refresh behavior
 
-IPv4 targets produce A records, IPv6 targets produce AAAA records, and hostname targets produce CNAME records. CNAME records are also returned for A/AAAA queries so recursive resolvers can follow the alias.
+IPv4 targets produce A records, IPv6 targets produce AAAA records, and hostname targets produce CNAME records. For A/AAAA and ANY queries, the plugin follows hostname targets and includes their address records in the same answer:
+
+```text
+app.example.com.     60 IN CNAME server.example.com.
+server.example.com.  60 IN A     10.0.1.10
+```
+
+Alias targets inside the configured zones are read from the same snapshot. Other targets are resolved through the next plugin (for example, `hosts` or `forward`) during the DNS query, preserving upstream TTLs and negative responses. Responses that use the next plugin are not marked authoritative. Without a next plugin, unresolved targets return only the CNAME chain. Explicit CNAME queries return only the alias. Local loops or chains exceeding 16 names return SERVFAIL.
 
 Names are case insensitive. Both bare API domain names and HTTP(S) domain URLs (with ports or paths) are accepted. Names must use ASCII DNS hostname syntax; use punycode for internationalized names. Targets must be plain IPs or hostnames, without schemes, ports, or paths.
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/coredns/coredns/plugin"
+	"github.com/coredns/coredns/plugin/pkg/nonwriter"
 	"github.com/miekg/dns"
 )
 
@@ -56,7 +57,8 @@ func (c *Coolify) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		return plugin.NextOrFailure(c.Name(), c.Next, ctx, w, r)
 	}
 	c.mu.RLock()
-	targets, found := c.snapshot[name]
+	snapshot := c.snapshot
+	_, found := snapshot[name]
 	c.mu.RUnlock()
 	if !found {
 		return plugin.NextOrFailure(c.Name(), c.Next, ctx, w, r)
@@ -64,21 +66,60 @@ func (c *Coolify) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	reply := new(dns.Msg)
 	reply.SetReply(r)
 	reply.Authoritative = true
-	for _, t := range targets {
-		h := dns.RR_Header{Name: q.Name, Class: dns.ClassINET, Ttl: c.ttl}
-		switch {
-		case t.alias != "":
-			h.Rrtype = dns.TypeCNAME
-			reply.Answer = append(reply.Answer, &dns.CNAME{Hdr: h, Target: t.alias})
-		case t.ip.Is4() && (q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY):
-			h.Rrtype = dns.TypeA
-			reply.Answer = append(reply.Answer, &dns.A{Hdr: h, A: t.ip.AsSlice()})
-		case t.ip.Is6() && (q.Qtype == dns.TypeAAAA || q.Qtype == dns.TypeANY):
-			h.Rrtype = dns.TypeAAAA
-			reply.Answer = append(reply.Answer, &dns.AAAA{Hdr: h, AAAA: t.ip.AsSlice()})
+	seen := map[string]bool{}
+	answerName := q.Name
+	for {
+		if seen[name] || len(seen) >= 16 {
+			return dns.RcodeServerFailure, fmt.Errorf("CNAME chain for %s loops or exceeds 16 names", q.Name)
 		}
+		seen[name] = true
+		targets, local := snapshot[name]
+		if !local || c.zones.Matches(name) == "" {
+			if c.Next == nil {
+				break
+			}
+			lookup := r.Copy()
+			lookup.Question[0].Name = answerName
+			captured := nonwriter.New(w)
+			code, err := plugin.NextOrFailure(c.Name(), c.Next, ctx, captured, lookup)
+			if err != nil || !plugin.ClientWrite(code) {
+				return code, err
+			}
+			if captured.Msg == nil {
+				return dns.RcodeServerFailure, fmt.Errorf("no response resolving CNAME target %s", answerName)
+			}
+			reply.Rcode = captured.Msg.Rcode
+			reply.Authoritative = false
+			reply.RecursionAvailable = captured.Msg.RecursionAvailable
+			reply.Truncated = captured.Msg.Truncated
+			reply.Answer = append(reply.Answer, captured.Msg.Answer...)
+			reply.Ns = captured.Msg.Ns
+			reply.Extra = captured.Msg.Extra
+			break
+		}
+		alias := ""
+		for _, t := range targets {
+			h := dns.RR_Header{Name: answerName, Class: dns.ClassINET, Ttl: c.ttl}
+			switch {
+			case t.alias != "":
+				h.Rrtype = dns.TypeCNAME
+				reply.Answer = append(reply.Answer, &dns.CNAME{Hdr: h, Target: t.alias})
+				alias = t.alias
+			case t.ip.Is4() && (q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY):
+				h.Rrtype = dns.TypeA
+				reply.Answer = append(reply.Answer, &dns.A{Hdr: h, A: t.ip.AsSlice()})
+			case t.ip.Is6() && (q.Qtype == dns.TypeAAAA || q.Qtype == dns.TypeANY):
+				h.Rrtype = dns.TypeAAAA
+				reply.Answer = append(reply.Answer, &dns.AAAA{Hdr: h, AAAA: t.ip.AsSlice()})
+			}
+		}
+		if alias == "" || (q.Qtype != dns.TypeA && q.Qtype != dns.TypeAAAA && q.Qtype != dns.TypeANY) {
+			break
+		}
+		answerName = alias
+		name = strings.ToLower(alias)
 	}
-	return dns.RcodeSuccess, w.WriteMsg(reply)
+	return reply.Rcode, w.WriteMsg(reply)
 }
 
 // refresh retains each failed server's last successful snapshot. Configuration
