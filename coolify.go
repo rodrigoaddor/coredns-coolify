@@ -31,7 +31,7 @@ type Coolify struct {
 	Next            plugin.Handler
 	baseURL, token  string
 	instanceDomain  string
-	connectIP       netip.Addr
+	connectHost     string
 	instanceTargets []target
 	lookupIP        func(context.Context, string, string) ([]netip.Addr, error)
 	servers         []server
@@ -169,14 +169,15 @@ func (c *Coolify) refresh(ctx context.Context) error {
 // Coolify's server API may return an internal SSH hostname rather than its
 // public address, so it cannot reliably supply the dashboard's DNS records.
 func (c *Coolify) fetchInstanceTargets(ctx context.Context) ([]target, error) {
-	if c.connectIP.IsValid() {
-		return []target{{ip: c.connectIP}}, nil
+	host := c.connectHost
+	if host == "" {
+		u, err := url.Parse(c.baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Coolify URL")
+		}
+		host = u.Hostname()
 	}
-	u, err := url.Parse(c.baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid Coolify URL")
-	}
-	if ip, err := netip.ParseAddr(u.Hostname()); err == nil {
+	if ip, err := netip.ParseAddr(host); err == nil {
 		return []target{{ip: ip.Unmap()}}, nil
 	}
 	lookup := c.lookupIP
@@ -185,9 +186,9 @@ func (c *Coolify) fetchInstanceTargets(ctx context.Context) ([]target, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.client.Timeout)
 	defer cancel()
-	ips, err := lookup(ctx, "ip", u.Hostname())
+	ips, err := lookup(ctx, "ip", host)
 	if err != nil {
-		return nil, fmt.Errorf("API hostname lookup failed")
+		return nil, fmt.Errorf("connection hostname lookup failed")
 	}
 	ts := []target{}
 	seen := map[netip.Addr]bool{}
@@ -202,7 +203,7 @@ func (c *Coolify) fetchInstanceTargets(ctx context.Context) ([]target, error) {
 		}
 	}
 	if len(ts) == 0 {
-		return nil, fmt.Errorf("API hostname has no IP addresses")
+		return nil, fmt.Errorf("connection hostname has no IP addresses")
 	}
 	return ts, nil
 }

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -70,7 +69,7 @@ func setup(controller *caddy.Controller) error {
 func parse(p *caddy.Controller) (*Coolify, error) {
 	c := &Coolify{interval: time.Minute, ttl: 60, byServer: map[string]records{}, snapshot: records{}}
 	timeout := 10 * time.Second
-	var connectIP netip.Addr
+	var connectHost string
 	seen := map[string]bool{}
 	count := 0
 	for p.Next() {
@@ -140,15 +139,18 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 					return nil, p.Err(err.Error())
 				}
 				c.instanceDomain = name
-			case "connect_ip":
+			case "connect_host":
 				if len(args) != 1 {
 					return nil, p.ArgErr()
 				}
-				ip, err := netip.ParseAddr(args[0])
-				if err != nil || ip.Zone() != "" {
-					return nil, p.Err("connect_ip must be an IPv4 or IPv6 address without a port or zone")
+				t, err := parseTarget(args[0])
+				if err != nil {
+					return nil, p.Err("connect_host must be an IP address or hostname without a scheme, port, path or zone")
 				}
-				connectIP = ip.Unmap()
+				connectHost = strings.TrimSuffix(t.alias, ".")
+				if t.ip.IsValid() {
+					connectHost = t.ip.String()
+				}
 			case "refresh", "timeout":
 				if len(args) != 1 {
 					return nil, p.ArgErr()
@@ -185,10 +187,10 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 	if strings.TrimSpace(c.token) == "" || strings.ContainsAny(c.token, "\r\n") {
 		return nil, fmt.Errorf("a nonempty API token is required via token or token_env")
 	}
-	c.connectIP = connectIP
+	c.connectHost = connectHost
 	c.zones = plugin.Zones(plugin.OriginsFromArgsOrServerBlock(nil, p.ServerBlockKeys))
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if connectIP.IsValid() {
+	if connectHost != "" {
 		// Only change the socket destination. The URL still supplies the HTTP
 		// Host header, TLS server name, and certificate verification hostname.
 		transport.Proxy = nil
@@ -198,7 +200,7 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 			if err != nil {
 				return nil, err
 			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(connectIP.String(), port))
+			return dialer.DialContext(ctx, network, net.JoinHostPort(connectHost, port))
 		}
 	}
 	c.client = &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}

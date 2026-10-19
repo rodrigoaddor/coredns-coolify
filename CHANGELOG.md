@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0
+
+- Replace `connect_ip` with `connect_host`, accepting IP addresses or hostnames such as `host.docker.internal` while preserving HTTP routing and TLS verification.
+- Resolve hostname connection overrides for dashboard A/AAAA records on each refresh.
+- Document the Docker host mapping for deployments on the Coolify host.
+
 ## 1.2.0
 
 - Include target A/AAAA records alongside CNAMEs by following local aliases and resolving other targets through the next CoreDNS plugin.

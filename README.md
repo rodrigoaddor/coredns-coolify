@@ -55,8 +55,8 @@ dig @127.0.0.1 -p 1053 app.example.com A
 ```
 
 - `coolify URL`: one instance origin. A bare hostname defaults to HTTPS. Explicit HTTP is supported. Paths, credentials, queries, and fragments are rejected.
-- `coolify_domain DOMAIN`: publish A/AAAA records for the Coolify dashboard using `connect_ip`, or the resolved IP addresses of the API URL when no connection override is set.
-- `connect_ip IP`: connect directly to this IPv4 or IPv6 address while keeping the URL hostname for HTTPS and HTTP routing. The URL determines the port. When set, requests bypass environment HTTP proxies.
+- `coolify_domain DOMAIN`: publish A/AAAA records for the Coolify dashboard using `connect_host`, or the resolved IP addresses of the API URL when no connection override is set.
+- `connect_host HOST`: connect directly to this IPv4 address, IPv6 address, or hostname (for example, `host.docker.internal`) while keeping the URL hostname for HTTPS and HTTP routing. The URL determines the port. When set, requests bypass environment HTTP proxies.
 - `token_env NAME`: read the bearer token from an environment variable at startup. Alternatively use `token VALUE`; exactly one token directive is required.
 - `server UUID [TARGET]`: repeat for each server. Without a target, each API row supplies its own address. A target overrides all rows for that server.
 - `refresh DURATION`: polling interval, default `1m`; must be positive.
@@ -65,26 +65,38 @@ dig @127.0.0.1 -p 1053 app.example.com A
 
 Create an API token in Coolify's **Keys & Tokens → API tokens** and enable API access. Tokens are sent in `Authorization: Bearer ...`, as required by the [Coolify domains endpoint](https://coolify.io/docs/api/endpoints/servers/get-domains-by-server-uuid). The plugin calls `GET /api/v1/servers/UUID/domains` for each configured server. HTTP redirects are refused to avoid forwarding credentials.
 
-## Connecting without DNS
+## Connecting through the Docker host
 
-If Coolify's hostname depends on this CoreDNS instance for resolution, set `connect_ip` to an address reachable from the CoreDNS process:
+If Coolify's hostname depends on this CoreDNS instance for resolution, set `connect_host` to an address or hostname reachable from the CoreDNS process. When running on the Coolify host:
 
 ```corefile
 coolify https://cloud.example.com {
     token_env COOLIFY_API_TOKEN
-    connect_ip 10.0.0.20
+    connect_host host.docker.internal
     coolify_domain cloud.example.com
     server server-uuid-one
 }
 ```
 
-The plugin connects to `10.0.0.20` and uses `cloud.example.com` for the HTTP Host header, TLS server name, and certificate verification. This avoids a DNS dependency when starting CoreDNS. An explicit port in the URL, such as `https://cloud.example.com:8443`, is preserved.
+The plugin resolves `host.docker.internal` through the system resolver (including `/etc/hosts`) and connects to it, while using `cloud.example.com` for the HTTP Host header, TLS server name, and certificate verification. This avoids resolving the dashboard hostname when starting CoreDNS. An explicit port in the URL, such as `https://cloud.example.com:8443`, is preserved.
 
-`connect_ip` controls the API connection. The optional target on each `server` directive controls the DNS records returned to clients.
+On Linux, add this mapping to the CoreDNS service in your Coolify Docker Compose configuration, as described in the [Docker networking documentation](https://docs.docker.com/compose/how-tos/networking/):
 
-`coolify_domain cloud.example.com` also publishes the dashboard itself as a DNS record. With the example above, it returns an A record for `10.0.0.20`, even when the API is unavailable. This explicit mapping takes precedence over resource records with the same name.
+```yaml
+services:
+  coredns:
+    # Add to your existing service configuration.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
 
-Without `connect_ip`, the plugin uses the IP literal in the API URL or resolves its hostname through system DNS on each refresh. All resolved IPv4 and IPv6 addresses are published; failed or empty lookups retain the previous addresses. System DNS must be able to resolve the API hostname independently of this CoreDNS instance. These are the API access addresses, so a hostname behind a proxy publishes the proxy's addresses.
+The Coolify proxy must listen on the host port specified by the API URL (443 by default for HTTPS). You can also use a fixed address, such as `connect_host 10.0.0.20`.
+
+`connect_host` controls the API connection. The optional target on each `server` directive controls the DNS records returned to clients.
+
+`coolify_domain cloud.example.com` also publishes the dashboard itself as a DNS record. With the example above, it publishes the resolved IPv4 and IPv6 addresses of `host.docker.internal`, even when the API is unavailable. Clients must be able to reach those addresses. This explicit mapping takes precedence over resource records with the same name.
+
+For dashboard records, the plugin uses a literal `connect_host` address directly or resolves its hostname on each refresh. Without `connect_host`, it uses the API URL hostname instead. All resolved IPv4 and IPv6 addresses are published; failed or empty lookups retain the previous addresses. System resolution must be able to resolve the selected hostname independently of this CoreDNS instance. These are the API access addresses, so a hostname behind a proxy publishes the proxy's addresses.
 
 ## DNS and refresh behavior
 
