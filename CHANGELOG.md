@@ -1,10 +1,13 @@
 # Changelog
 
-## 1.3.0
+## 1.4.0
 
-- Replace `connect_ip` with `connect_host`, accepting IP addresses or hostnames such as `host.docker.internal` while preserving HTTP routing and TLS verification.
-- Resolve hostname connection overrides for dashboard A/AAAA records on each refresh.
-- Document the Docker host mapping for deployments on the Coolify host.
+- Separate API connections (`connect_host`) from dashboard DNS publishing (`publish`).
+- Derive the dashboard hostname from the API URL and publish configured A, AAAA, or CNAME records immediately, independently of API availability.
+- Preserve hostname targets as CNAMEs for resolution through subsequent CoreDNS plugins.
+- Validate dashboard zones, targets, and self aliases; warn when dashboard publishing overrides discovered resources.
+- Add `servers auto` with explicit server overrides, periodic membership refresh, and retained discovery on API failures.
+- Require explicit HTTP(S) API origins and environment-based tokens; remove legacy configuration directives and dashboard address lookup.
 
 ## 1.2.0
 
@@ -13,8 +16,8 @@
 
 ## 1.1.0
 
-- Add `connect_ip` to connect directly to an IPv4 or IPv6 address while preserving the API hostname for HTTPS verification and routing.
-- Add `coolify_domain` to publish dashboard A/AAAA records using `connect_ip` or the resolved API hostname addresses.
+- Add a connection override to connect directly to an IPv4 or IPv6 address while preserving the API hostname for HTTPS verification and routing.
+- Add dashboard A/AAAA publishing from connection addresses (superseded by independent publishing).
 - Retain dashboard addresses when DNS lookups fail, and give the configured dashboard domain precedence over resource records.
 - Add coverage for direct connections, TLS hostname verification, dashboard records, and address refreshes.
 

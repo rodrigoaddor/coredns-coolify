@@ -32,12 +32,13 @@ func setup(controller *caddy.Controller) error {
 	var done chan struct{}
 	controller.OnStartup(func() error {
 		start.Do(func() {
-			if err := c.refresh(ctx); err != nil {
-				log.Warning(err)
-			}
 			done = make(chan struct{})
 			go func() {
 				defer close(done)
+				// Serve the static dashboard record while initial discovery runs.
+				if err := c.refresh(ctx); err != nil && ctx.Err() == nil {
+					log.Warning(err)
+				}
 				ticker := time.NewTicker(c.interval)
 				defer ticker.Stop()
 				for {
@@ -81,15 +82,12 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 		if len(args) != 1 {
 			return nil, p.ArgErr()
 		}
-		base := args[0]
-		if !strings.Contains(base, "://") {
-			base = "https://" + base
-		}
-		u, err := url.Parse(base)
+		u, err := url.Parse(args[0])
 		if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 			return nil, p.Err("Coolify URL must be an HTTP(S) origin without credentials, path, query or fragment")
 		}
 		c.baseURL = strings.TrimRight(u.String(), "/")
+		c.dashboardName = u.Hostname()
 		for p.NextBlock() {
 			key := p.Val()
 			args := p.RemainingArgs()
@@ -118,27 +116,25 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 					s.override = args[1]
 				}
 				c.servers = append(c.servers, s)
-			case "token", "token_env":
+			case "servers":
+				if len(args) != 1 || args[0] != "auto" {
+					return nil, p.Err("servers requires auto")
+				}
+				c.autoServers = true
+			case "token_env":
 				if len(args) != 1 {
 					return nil, p.ArgErr()
 				}
-				if key == "token_env" {
-					c.token = os.Getenv(args[0])
-					if c.token == "" {
-						return nil, p.Err("token environment variable is empty or unset")
-					}
-				} else {
-					c.token = args[0]
-				}
-			case "coolify_domain":
+				c.token = os.Getenv(args[0])
+			case "publish":
 				if len(args) != 1 {
 					return nil, p.ArgErr()
 				}
-				name, err := domainName(args[0], false)
+				t, err := parseTarget(args[0])
 				if err != nil {
 					return nil, p.Err(err.Error())
 				}
-				c.instanceDomain = name
+				c.publish = []target{t}
 			case "connect_host":
 				if len(args) != 1 {
 					return nil, p.ArgErr()
@@ -178,17 +174,27 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 			}
 		}
 	}
-	if count == 0 || len(c.servers) == 0 {
-		return nil, fmt.Errorf("a Coolify URL and at least one server are required")
-	}
-	if seen["token"] && seen["token_env"] {
-		return nil, fmt.Errorf("use only one of token or token_env")
+	if count == 0 || (len(c.servers) == 0 && !c.autoServers && len(c.publish) == 0) {
+		return nil, fmt.Errorf("a Coolify URL and server, servers auto, or publish are required")
 	}
 	if strings.TrimSpace(c.token) == "" || strings.ContainsAny(c.token, "\r\n") {
-		return nil, fmt.Errorf("a nonempty API token is required via token or token_env")
+		return nil, fmt.Errorf("a nonempty API token is required via token_env")
 	}
-	c.connectHost = connectHost
 	c.zones = plugin.Zones(plugin.OriginsFromArgsOrServerBlock(nil, p.ServerBlockKeys))
+	if len(c.publish) > 0 {
+		name, err := domainName(c.dashboardName, false)
+		if err != nil || net.ParseIP(c.dashboardName) != nil {
+			return nil, fmt.Errorf("publishing requires a DNS hostname in the Coolify URL")
+		}
+		c.dashboardName = name
+		if c.zones.Matches(name) == "" {
+			return nil, fmt.Errorf("dashboard hostname %s is outside the configured zones", name)
+		}
+		if c.publish[0].alias == name {
+			return nil, fmt.Errorf("dashboard CNAME for %s points to itself", name)
+		}
+		c.snapshot[name] = c.publish
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if connectHost != "" {
 		// Only change the socket destination. The URL still supplies the HTTP

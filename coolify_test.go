@@ -18,7 +18,7 @@ import (
 
 func TestParse(t *testing.T) {
 	t.Setenv("COOLIFY_TOKEN", "secret")
-	good := `coolify coolify.example.com {
+	good := `coolify https://coolify.example.com {
  token_env COOLIFY_TOKEN
  server first
  server second 192.0.2.10
@@ -35,11 +35,11 @@ func TestParse(t *testing.T) {
 		t.Fatalf("unexpected configuration: %+v", c)
 	}
 	for _, body := range []string{
-		"server one", "token secret", "token_env MISSING\nserver one",
-		"token secret\nserver one\nserver one", "token secret\nserver one bad/name",
-		"token secret\nserver one\nrefresh 0s", "token secret\nserver one\ntimeout -1s",
-		"token secret\nserver one\nttl -1", "token secret\nserver one\nunknown foo",
-		"token secret\ntoken_env COOLIFY_TOKEN\nserver one", "token secret\nserver ../one",
+		"server one", "token_env COOLIFY_TOKEN", "token_env MISSING\nserver one",
+		"token_env COOLIFY_TOKEN\nserver one\nserver one", "token_env COOLIFY_TOKEN\nserver one bad/name",
+		"token_env COOLIFY_TOKEN\nserver one\nrefresh 0s", "token_env COOLIFY_TOKEN\nserver one\ntimeout -1s",
+		"token_env COOLIFY_TOKEN\nserver one\nttl -1", "token_env COOLIFY_TOKEN\nserver one\nunknown foo",
+		"token_env COOLIFY_TOKEN\ntoken_env COOLIFY_TOKEN\nserver one", "token_env COOLIFY_TOKEN\nserver ../one",
 	} {
 		t.Run(body, func(t *testing.T) {
 			if _, err := parse(controller("coolify https://coolify.example.com {\n" + body + "\n}")); err == nil {
@@ -50,6 +50,7 @@ func TestParse(t *testing.T) {
 }
 
 func TestRefreshAndDNS(t *testing.T) {
+	t.Setenv("COOLIFY_TOKEN", "secret")
 	var mu sync.Mutex
 	responses := map[string]string{
 		"one":   `[{"ip":"192.0.2.1","domains":["app.example.com","https://Docs.example.com:443/path"]},{"ip":"2001:db8::1","domains":["v6.example.com"]}]`,
@@ -74,7 +75,7 @@ func TestRefreshAndDNS(t *testing.T) {
 	}))
 	defer api.Close()
 	c, err := parse(controller(fmt.Sprintf(`coolify %s {
- token secret
+ token_env COOLIFY_TOKEN
  server one
  server two 198.51.100.2
  server three edge.example.net
@@ -161,10 +162,11 @@ func TestRefreshAndDNS(t *testing.T) {
 }
 
 func TestInvalidAPIDataRetainsSnapshot(t *testing.T) {
+	t.Setenv("COOLIFY_TOKEN", "secret")
 	body := `[{"ip":"192.0.2.1","domains":["app.example.com"]}]`
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))
 	defer api.Close()
-	c, err := parse(controller(fmt.Sprintf("coolify %s {\n token secret\n server one\n}", api.URL)))
+	c, err := parse(controller(fmt.Sprintf("coolify %s {\n token_env COOLIFY_TOKEN\n server one\n}", api.URL)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,12 +204,13 @@ func TestTargetsAndNames(t *testing.T) {
 }
 
 func TestRedirectRefused(t *testing.T) {
+	t.Setenv("COOLIFY_TOKEN", "secret")
 	reached := false
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached = true; fmt.Fprint(w, "[]") }))
 	defer destination.Close()
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, destination.URL, http.StatusFound) }))
 	defer origin.Close()
-	c, err := parse(controller(fmt.Sprintf("coolify %s {\n token secret\n server one\n}", origin.URL)))
+	c, err := parse(controller(fmt.Sprintf("coolify %s {\n token_env COOLIFY_TOKEN\n server one\n}", origin.URL)))
 	if err != nil {
 		t.Fatal(err)
 	}

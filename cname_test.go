@@ -20,16 +20,16 @@ func TestCNAMEAnswers(t *testing.T) {
 		qtype uint16
 		want  []string
 	}{
-		{"IPv4", dns.TypeA, []string{"APP.example.com.\t60\tIN\tCNAME\tserver.example.com.", "server.example.com.\t60\tIN\tA\t10.0.1.10"}},
+		{"IPv4", dns.TypeA, []string{"APP.example.com.\t60\tIN\tCNAME\tserver.example.com.", "server.example.com.\t60\tIN\tA\t198.51.100.10"}},
 		{"IPv6", dns.TypeAAAA, []string{"APP.example.com.\t60\tIN\tCNAME\tserver.example.com.", "server.example.com.\t60\tIN\tAAAA\t2001:db8::10"}},
-		{"ANY", dns.TypeANY, []string{"APP.example.com.\t60\tIN\tCNAME\tserver.example.com.", "server.example.com.\t60\tIN\tA\t10.0.1.10", "server.example.com.\t60\tIN\tAAAA\t2001:db8::10"}},
+		{"ANY", dns.TypeANY, []string{"APP.example.com.\t60\tIN\tCNAME\tserver.example.com.", "server.example.com.\t60\tIN\tA\t198.51.100.10", "server.example.com.\t60\tIN\tAAAA\t2001:db8::10"}},
 		{"CNAME", dns.TypeCNAME, []string{"APP.example.com.\t60\tIN\tCNAME\tserver.example.com."}},
 		{"TXT", dns.TypeTXT, []string{"APP.example.com.\t60\tIN\tCNAME\tserver.example.com."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := &Coolify{ttl: 60, zones: plugin.Zones{"example.com."}, snapshot: records{
 				"app.example.com.":    {{alias: "server.example.com."}},
-				"server.example.com.": {{ip: netip.MustParseAddr("10.0.1.10")}, {ip: netip.MustParseAddr("2001:db8::10")}},
+				"server.example.com.": {{ip: netip.MustParseAddr("198.51.100.10")}, {ip: netip.MustParseAddr("2001:db8::10")}},
 			}}
 			c.Next = plugin.HandlerFunc(func(context.Context, dns.ResponseWriter, *dns.Msg) (int, error) {
 				t.Fatal("local targets must not use the next plugin")
@@ -91,7 +91,7 @@ func TestCNAMEUpstream(t *testing.T) {
 				upstream.RecursionAvailable = true
 				upstream.AuthenticatedData = true
 				if !tc.empty {
-					value := "server.example.net. 30 IN A 10.0.1.10"
+					value := "server.example.net. 30 IN A 198.51.100.10"
 					if tc.qtype == dns.TypeAAAA {
 						value = "server.example.net. 30 IN AAAA 2001:db8::10"
 					}

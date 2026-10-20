@@ -4,7 +4,8 @@
     coolify https://coolify.example.com {
         token_env COOLIFY_API_TOKEN
         connect_host host.docker.internal
-        coolify_domain coolify.example.com
+        publish edge.example.net
+        servers auto
         server server-uuid-one
         server server-uuid-two 192.0.2.20
         server server-uuid-three edge.example.net
@@ -12,5 +13,6 @@
         timeout 10s
         ttl 60
     }
-    forward . 1.1.1.1 9.9.9.9
+    # Replace these documentation addresses with your DNS resolvers.
+    forward . 192.0.2.53 198.51.100.53
 }

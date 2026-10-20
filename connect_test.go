@@ -19,6 +19,7 @@ import (
 )
 
 func TestConnectHost(t *testing.T) {
+	t.Setenv("COOLIFY_TOKEN", "secret")
 	// The certificate is valid only for the URL hostname, not the dialed IP.
 	const hostname = "cloud.example.invalid"
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -70,7 +71,7 @@ func TestConnectHost(t *testing.T) {
 				u, _ := url.Parse(api.URL)
 				authority = net.JoinHostPort(hostname, u.Port())
 				origin := u.Scheme + "://" + authority
-				c, err := parse(controller(fmt.Sprintf("coolify %s {\n token secret\n connect_host %s\n server one\n}", origin, destination)))
+				c, err := parse(controller(fmt.Sprintf("coolify %s {\n token_env COOLIFY_TOKEN\n connect_host %s\n server one\n}", origin, destination)))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -102,15 +103,16 @@ func TestConnectHost(t *testing.T) {
 }
 
 func TestConnectHostConfiguration(t *testing.T) {
+	t.Setenv("COOLIFY_TOKEN", "secret")
 	for _, value := range []string{"127.0.0.1", "2001:db8::1", "host.docker.internal", "edge.example.com"} {
-		c, err := parse(controller("coolify https://cloud.example.com {\n token secret\n server one\n connect_host " + value + "\n}"))
+		c, err := parse(controller("coolify https://cloud.example.com {\n token_env COOLIFY_TOKEN\n server one\n connect_host " + value + "\n}"))
 		if err != nil {
 			t.Fatalf("valid host %s: %v", value, err)
 		}
 		c.client.CloseIdleConnections()
 	}
 	for _, value := range []string{"", "https://edge.example.com", "edge.example.com/path", "*.example.com", "127.0.0.1:443", "[::1]", "fe80::1%eth0", "127.0.0.1 extra", "127.0.0.1\n connect_host 127.0.0.2"} {
-		if _, err := parse(controller("coolify https://cloud.example.com {\n token secret\n server one\n connect_host " + value + "\n}")); err == nil {
+		if _, err := parse(controller("coolify https://cloud.example.com {\n token_env COOLIFY_TOKEN\n server one\n connect_host " + value + "\n}")); err == nil {
 			t.Fatalf("accepted invalid connect_host %q", value)
 		}
 	}

@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -28,21 +28,21 @@ type records map[string][]target
 
 // Coolify is a CoreDNS handler. Its configuration is immutable after startup.
 type Coolify struct {
-	Next            plugin.Handler
-	baseURL, token  string
-	instanceDomain  string
-	connectHost     string
-	instanceTargets []target
-	lookupIP        func(context.Context, string, string) ([]netip.Addr, error)
-	servers         []server
-	zones           plugin.Zones
-	interval        time.Duration
-	ttl             uint32
-	client          *http.Client
-	refreshMu       sync.Mutex
-	mu              sync.RWMutex
-	byServer        map[string]records
-	snapshot        records
+	Next           plugin.Handler
+	baseURL, token string
+	dashboardName  string
+	publish        []target
+	servers        []server
+	autoServers    bool
+	discovered     []server
+	zones          plugin.Zones
+	interval       time.Duration
+	ttl            uint32
+	client         *http.Client
+	refreshMu      sync.Mutex
+	mu             sync.RWMutex
+	byServer       map[string]records
+	snapshot       records
 }
 
 func (c *Coolify) Name() string { return "coolify" }
@@ -128,15 +128,32 @@ func (c *Coolify) refresh(ctx context.Context) error {
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
 	var failures []string
-	if c.instanceDomain != "" {
-		ts, err := c.fetchInstanceTargets(ctx)
+	if c.autoServers {
+		servers, err := c.fetchServers(ctx)
 		if err != nil {
-			failures = append(failures, fmt.Sprintf("Coolify domain %s: %v", c.instanceDomain, err))
+			failures = append(failures, fmt.Sprintf("server discovery: %v", err))
 		} else {
-			c.instanceTargets = ts
+			c.discovered = servers
 		}
 	}
-	for _, s := range c.servers {
+	// Explicit servers come first and override auto-discovered configuration.
+	servers := append([]server(nil), c.servers...)
+	active := map[string]bool{}
+	for _, s := range servers {
+		active[s.uuid] = true
+	}
+	for _, s := range c.discovered {
+		if !active[s.uuid] {
+			servers = append(servers, s)
+			active[s.uuid] = true
+		}
+	}
+	for uuid := range c.byServer {
+		if !active[uuid] {
+			delete(c.byServer, uuid)
+		}
+	}
+	for _, s := range servers {
 		fresh, err := c.fetch(ctx, s)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("server %s: %v", s.uuid, err))
@@ -145,16 +162,18 @@ func (c *Coolify) refresh(ctx context.Context) error {
 		c.byServer[s.uuid] = fresh
 	}
 	merged := records{}
-	for _, s := range c.servers {
+	for _, s := range servers {
 		for name, ts := range c.byServer[s.uuid] {
 			if _, exists := merged[name]; !exists {
 				merged[name] = ts
 			}
 		}
 	}
-	// The explicitly configured instance domain takes precedence over resources.
-	if len(c.instanceTargets) > 0 {
-		merged[c.instanceDomain] = c.instanceTargets
+	if len(c.publish) > 0 {
+		if _, exists := merged[c.dashboardName]; exists {
+			log.Warningf("discovered resource %s conflicts with dashboard publish record; using publish target", c.dashboardName)
+		}
+		merged[c.dashboardName] = c.publish
 	}
 	c.mu.Lock()
 	c.snapshot = merged
@@ -165,77 +184,69 @@ func (c *Coolify) refresh(ctx context.Context) error {
 	return nil
 }
 
-// fetchInstanceTargets uses the same destination configured for API access.
-// Coolify's server API may return an internal SSH hostname rather than its
-// public address, so it cannot reliably supply the dashboard's DNS records.
-func (c *Coolify) fetchInstanceTargets(ctx context.Context) ([]target, error) {
-	host := c.connectHost
-	if host == "" {
-		u, err := url.Parse(c.baseURL)
-		if err != nil {
-			return nil, fmt.Errorf("invalid Coolify URL")
+// fetchServers returns a stable order so API list ordering cannot change DNS precedence.
+func (c *Coolify) fetchServers(ctx context.Context) ([]server, error) {
+	var rows []struct {
+		UUID string `json:"uuid"`
+	}
+	if err := c.get(ctx, "/api/v1/servers", &rows); err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		return nil, fmt.Errorf("invalid servers JSON")
+	}
+	servers := make([]server, 0, len(rows))
+	seen := map[string]bool{}
+	for _, row := range rows {
+		if row.UUID == "" || strings.ContainsAny(row.UUID, "/?#%") || row.UUID == "." || row.UUID == ".." || seen[row.UUID] {
+			return nil, fmt.Errorf("invalid or duplicate server UUID in API response")
 		}
-		host = u.Hostname()
+		seen[row.UUID] = true
+		servers = append(servers, server{uuid: row.UUID})
 	}
-	if ip, err := netip.ParseAddr(host); err == nil {
-		return []target{{ip: ip.Unmap()}}, nil
-	}
-	lookup := c.lookupIP
-	if lookup == nil {
-		lookup = net.DefaultResolver.LookupNetIP
-	}
-	ctx, cancel := context.WithTimeout(ctx, c.client.Timeout)
-	defer cancel()
-	ips, err := lookup(ctx, "ip", host)
-	if err != nil {
-		return nil, fmt.Errorf("connection hostname lookup failed")
-	}
-	ts := []target{}
-	seen := map[netip.Addr]bool{}
-	for _, ip := range ips {
-		if !ip.IsValid() || ip.Zone() != "" {
-			continue
-		}
-		ip = ip.Unmap()
-		if !seen[ip] {
-			ts = append(ts, target{ip: ip})
-			seen[ip] = true
-		}
-	}
-	if len(ts) == 0 {
-		return nil, fmt.Errorf("connection hostname has no IP addresses")
-	}
-	return ts, nil
+	sort.Slice(servers, func(i, j int) bool { return servers[i].uuid < servers[j].uuid })
+	return servers, nil
 }
 
-func (c *Coolify) fetch(ctx context.Context, s server) (records, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v1/servers/"+url.PathEscape(s.uuid)+"/domains", nil)
+// get bounds API responses and keeps credentials and response bodies out of errors.
+func (c *Coolify) get(ctx context.Context, path string, result any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("API request failed")
+		return fmt.Errorf("API request failed")
 	} // Do not log credentials or response bodies.
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned HTTP %d", resp.StatusCode)
+		return fmt.Errorf("API returned HTTP %d", resp.StatusCode)
 	}
 	const maxBody = 8 << 20
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading API response failed")
+		return fmt.Errorf("reading API response failed")
 	}
 	if len(data) > maxBody {
-		return nil, fmt.Errorf("API response exceeds 8 MiB")
+		return fmt.Errorf("API response exceeds 8 MiB")
 	}
+	if err := json.Unmarshal(data, result); err != nil {
+		return fmt.Errorf("invalid API JSON")
+	}
+	return nil
+}
+
+func (c *Coolify) fetch(ctx context.Context, s server) (records, error) {
 	var rows []struct {
 		IP      string   `json:"ip"`
 		Domains []string `json:"domains"`
 	}
-	if err := json.Unmarshal(data, &rows); err != nil || rows == nil {
+	if err := c.get(ctx, "/api/v1/servers/"+url.PathEscape(s.uuid)+"/domains", &rows); err != nil {
+		return nil, err
+	}
+	if rows == nil {
 		return nil, fmt.Errorf("invalid domains JSON")
 	}
 	out := records{}
