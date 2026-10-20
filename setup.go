@@ -69,6 +69,8 @@ func setup(controller *caddy.Controller) error {
 
 func parse(p *caddy.Controller) (*Coolify, error) {
 	c := &Coolify{interval: time.Minute, ttl: 60, byServer: map[string]records{}, snapshot: records{}}
+	debug := os.Getenv("COOLIFY_DEBUG")
+	c.debug = debug == "1" || strings.EqualFold(debug, "true")
 	timeout := 10 * time.Second
 	var connectHost string
 	seen := map[string]bool{}

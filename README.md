@@ -135,6 +135,27 @@ Only names inside the CoreDNS server block's zones are answered. Unknown names a
 
 `cache` can be added for upstream queries, but it can also retain Coolify answers until their TTL expires after a refresh removes or changes a record.
 
+## Troubleshooting API requests
+
+Set `COOLIFY_DEBUG=true` (or `1`) in the CoreDNS process environment and restart CoreDNS to include the underlying error in request failure warnings:
+
+```sh
+export COOLIFY_DEBUG=true
+./coredns -conf Corefile
+```
+
+For Docker Compose, add `COOLIFY_DEBUG: "true"` under the CoreDNS service's `environment` and recreate the container. This setting is read at configuration time and does not require the CoreDNS `debug` plugin. Unset it or set it to `false` to restore concise warnings.
+
+For example, a DNS failure becomes:
+
+```text
+[WARNING] plugin/coolify: server discovery: API request failed: Get "https://cloud.example.com/api/v1/servers": dial tcp: lookup cloud.example.com: no such host
+```
+
+Debug mode includes the original HTTP transport error (including the request URL) or response body read error. It does not dump authorization headers or response bodies.
+
+`server discovery: API request failed` means the server-list request failed before a usable HTTP response. Check the detailed error for DNS lookup failures, refused or unreachable connections, TLS certificate verification failures, and timeouts. With `connect_host`, verify that the destination is reachable from the CoreDNS container on the API URL's port, and that its proxy presents a certificate valid for the URL hostname. Authentication errors produce an HTTP status warning such as `API returned HTTP 401` instead.
+
 ## Development
 
 ```sh

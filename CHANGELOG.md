@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.1
+
+- Add `COOLIFY_DEBUG=true` (or `1`) to include underlying HTTP request and response read errors in API failure warnings.
+- Document how to enable debug logging and troubleshoot DNS, connection, TLS, and timeout failures.
+- Add regression coverage for debug and default error messages without exposing the API token.
+
 ## 1.4.0
 
 - Separate API connections (`connect_host`) from dashboard DNS publishing (`publish`).

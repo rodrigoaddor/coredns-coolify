@@ -30,6 +30,7 @@ type records map[string][]target
 type Coolify struct {
 	Next           plugin.Handler
 	baseURL, token string
+	debug          bool
 	dashboardName  string
 	publish        []target
 	servers        []server
@@ -208,7 +209,8 @@ func (c *Coolify) fetchServers(ctx context.Context) ([]server, error) {
 	return servers, nil
 }
 
-// get bounds API responses and keeps credentials and response bodies out of errors.
+// get bounds API responses. Debug errors include transport and read failures,
+// never request headers or response bodies.
 func (c *Coolify) get(ctx context.Context, path string, result any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
@@ -218,8 +220,11 @@ func (c *Coolify) get(ctx context.Context, path string, result any) error {
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
+		if c.debug {
+			return fmt.Errorf("API request failed: %w", err)
+		}
 		return fmt.Errorf("API request failed")
-	} // Do not log credentials or response bodies.
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("API returned HTTP %d", resp.StatusCode)
@@ -227,6 +232,9 @@ func (c *Coolify) get(ctx context.Context, path string, result any) error {
 	const maxBody = 8 << 20
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
+		if c.debug {
+			return fmt.Errorf("reading API response failed: %w", err)
+		}
 		return fmt.Errorf("reading API response failed")
 	}
 	if len(data) > maxBody {
