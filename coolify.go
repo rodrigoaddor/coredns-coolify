@@ -30,7 +30,9 @@ type records map[string][]target
 type Coolify struct {
 	Next           plugin.Handler
 	baseURL, token string
+	persistPath    string
 	debug          bool
+	logDiscovery   bool
 	dashboardName  string
 	publish        []target
 	servers        []server
@@ -128,27 +130,30 @@ func (c *Coolify) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 func (c *Coolify) refresh(ctx context.Context) error {
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
+	c.mu.RLock()
+	previous := c.snapshot
+	c.mu.RUnlock()
 	var failures []string
 	if c.autoServers {
 		servers, err := c.fetchServers(ctx)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("server discovery: %v", err))
 		} else {
+			if c.logDiscovery {
+				known := map[string]bool{}
+				for _, s := range c.discovered {
+					known[s.uuid] = true
+				}
+				for _, s := range servers {
+					if !known[s.uuid] {
+						log.Infof("discovered server %q", s.uuid)
+					}
+				}
+			}
 			c.discovered = servers
 		}
 	}
-	// Explicit servers come first and override auto-discovered configuration.
-	servers := append([]server(nil), c.servers...)
-	active := map[string]bool{}
-	for _, s := range servers {
-		active[s.uuid] = true
-	}
-	for _, s := range c.discovered {
-		if !active[s.uuid] {
-			servers = append(servers, s)
-			active[s.uuid] = true
-		}
-	}
+	servers, active := c.activeServers()
 	for uuid := range c.byServer {
 		if !active[uuid] {
 			delete(c.byServer, uuid)
@@ -162,6 +167,36 @@ func (c *Coolify) refresh(ctx context.Context) error {
 		}
 		c.byServer[s.uuid] = fresh
 	}
+	c.rebuildSnapshot(servers)
+	if c.logDiscovery {
+		c.logRecordAdditions(previous)
+	}
+	if err := c.saveState(); err != nil {
+		failures = append(failures, fmt.Sprintf("persist cache: %v", err))
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("%s", strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+// activeServers preserves explicit precedence over discovered servers.
+func (c *Coolify) activeServers() ([]server, map[string]bool) {
+	servers := append([]server(nil), c.servers...)
+	active := map[string]bool{}
+	for _, s := range servers {
+		active[s.uuid] = true
+	}
+	for _, s := range c.discovered {
+		if !active[s.uuid] {
+			servers = append(servers, s)
+			active[s.uuid] = true
+		}
+	}
+	return servers, active
+}
+
+func (c *Coolify) rebuildSnapshot(servers []server) {
 	merged := records{}
 	for _, s := range servers {
 		for name, ts := range c.byServer[s.uuid] {
@@ -179,10 +214,45 @@ func (c *Coolify) refresh(ctx context.Context) error {
 	c.mu.Lock()
 	c.snapshot = merged
 	c.mu.Unlock()
-	if len(failures) > 0 {
-		return fmt.Errorf("%s", strings.Join(failures, "; "))
+}
+
+// logRecordAdditions compares published snapshots, including target changes.
+// Restored cache entries form the baseline and are not logged as new discoveries.
+func (c *Coolify) logRecordAdditions(previous records) {
+	c.mu.RLock()
+	current := c.snapshot
+	c.mu.RUnlock()
+	var additions []string
+	for name, targets := range current {
+		if c.zones.Matches(name) == "" {
+			continue
+		}
+		known := map[target]bool{}
+		for _, t := range previous[name] {
+			known[t] = true
+		}
+		for _, t := range targets {
+			if known[t] {
+				continue
+			}
+			kind, value := "CNAME", t.alias
+			if t.ip.IsValid() {
+				kind, value = "AAAA", t.ip.String()
+				if t.ip.Is4() {
+					kind = "A"
+				}
+			}
+			additions = append(additions, fmt.Sprintf("%s %s %s", name, kind, value))
+		}
 	}
-	return nil
+	sort.Strings(additions)
+	for _, record := range additions {
+		log.Infof("discovered record %s", record)
+	}
+}
+
+func validServerUUID(uuid string) bool {
+	return uuid != "" && !strings.ContainsAny(uuid, "/?#%") && uuid != "." && uuid != ".."
 }
 
 // fetchServers returns a stable order so API list ordering cannot change DNS precedence.
@@ -199,7 +269,7 @@ func (c *Coolify) fetchServers(ctx context.Context) ([]server, error) {
 	servers := make([]server, 0, len(rows))
 	seen := map[string]bool{}
 	for _, row := range rows {
-		if row.UUID == "" || strings.ContainsAny(row.UUID, "/?#%") || row.UUID == "." || row.UUID == ".." || seen[row.UUID] {
+		if !validServerUUID(row.UUID) || seen[row.UUID] {
 			return nil, fmt.Errorf("invalid or duplicate server UUID in API response")
 		}
 		seen[row.UUID] = true

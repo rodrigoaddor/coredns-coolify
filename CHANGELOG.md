@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.0
+
+- Add optional `persist PATH` to save per-server records and the auto-discovered server list, restoring DNS data before startup discovery runs.
+- Preserve server precedence, partial refresh updates, and record and server removals across restarts; retain restored data during API outages.
+- Validate versioned, configuration-bound cache files and save them atomically without storing API tokens in plaintext; warn on cache failures without blocking DNS startup.
+- Add optional `log_discovery` INFO logging for newly auto-discovered servers and published A, AAAA, or CNAME records, including target changes, without repeating unchanged or restored discoveries.
+- Document persistent Docker volumes and discovery logging, and add regression coverage for cache restoration, validation, outages, deletions, and discovery logs.
+
 ## 1.4.1
 
 - Add `COOLIFY_DEBUG=true` (or `1`) to include underlying HTTP request and response read errors in API failure warnings.

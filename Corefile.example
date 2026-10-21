@@ -9,6 +9,10 @@
         server server-uuid-one
         server server-uuid-two 192.0.2.20
         server server-uuid-three edge.example.net
+        # Optional: use a writable persistent volume for this path.
+        # persist /data/coolify.json
+        # Optional: log new auto-discovered servers and published DNS records.
+        # log_discovery
         refresh 1m
         timeout 10s
         ttl 60

@@ -35,7 +35,7 @@ func setup(controller *caddy.Controller) error {
 			done = make(chan struct{})
 			go func() {
 				defer close(done)
-				// Serve the static dashboard record while initial discovery runs.
+				// Serve restored records and the dashboard while discovery runs.
 				if err := c.refresh(ctx); err != nil && ctx.Err() == nil {
 					log.Warning(err)
 				}
@@ -102,7 +102,7 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 				if len(args) < 1 || len(args) > 2 {
 					return nil, p.ArgErr()
 				}
-				if args[0] == "" || strings.ContainsAny(args[0], "/?#%") || args[0] == "." || args[0] == ".." {
+				if !validServerUUID(args[0]) {
 					return nil, p.Err("invalid server UUID")
 				}
 				for _, s := range c.servers {
@@ -128,6 +128,16 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 					return nil, p.ArgErr()
 				}
 				c.token = os.Getenv(args[0])
+			case "log_discovery":
+				if len(args) != 0 {
+					return nil, p.ArgErr()
+				}
+				c.logDiscovery = true
+			case "persist":
+				if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
+					return nil, p.ArgErr()
+				}
+				c.persistPath = args[0]
 			case "publish":
 				if len(args) != 1 {
 					return nil, p.ArgErr()
@@ -212,5 +222,8 @@ func parse(p *caddy.Controller) (*Coolify, error) {
 		}
 	}
 	c.client = &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if err := c.loadState(); err != nil {
+		log.Warningf("ignoring persisted cache: %v", err)
+	}
 	return c, nil
 }

@@ -49,6 +49,9 @@ dig @127.0.0.1 -p 1053 app.example.com A
         server server-uuid-one
         server server-uuid-two 192.0.2.20
         server server-uuid-three edge.example.net
+        # Optional: restore discovered data across restarts.
+        persist /data/coolify.json
+        log_discovery
         refresh 1m
         timeout 10s
         ttl 60
@@ -64,6 +67,8 @@ dig @127.0.0.1 -p 1053 app.example.com A
 - `publish TARGET`: optionally publish the dashboard hostname from the URL. IPv4 produces A, IPv6 produces AAAA, and a hostname produces CNAME. The record is available immediately, before any API request. Omission disables dashboard publishing. This target is independent of `connect_host`.
 - `server UUID [TARGET]`: discover domains for this server. Without a target, each API row supplies its own address. A target overrides all rows for that server. Repeat for multiple servers.
 - `servers auto`: discover all servers using `GET /api/v1/servers` each refresh. Explicit `server` directives override individual server targets and are queried even if absent from the discovered list.
+- `log_discovery`: enable INFO logs for newly auto-discovered server UUIDs and newly published A, AAAA, or CNAME records. Disabled by default; takes no arguments.
+- `persist PATH`: optionally save records and the auto-discovered server list to this JSON file and restore them during configuration, before DNS starts. Disabled by default. See persistence below.
 - `refresh DURATION`: polling interval, default `1m`; must be positive.
 - `timeout DURATION`: HTTP timeout per API request, default `10s`; must be positive.
 - `ttl SECONDS`: unsigned DNS TTL, default `60`; zero disables client caching.
@@ -127,13 +132,51 @@ Alias targets inside the configured zones are read from the same snapshot. Targe
 
 Names are case insensitive. Both bare API domain names and HTTP(S) domain URLs (with ports or paths) are accepted. Names must use ASCII DNS hostname syntax; use punycode for internationalized names. Targets must be plain IPs or hostnames, without schemes, ports, or paths.
 
-Dashboard publishing is initialized during configuration. Application discovery refreshes in the background on startup and then periodically. Queries read an in-memory snapshot and never wait for HTTP. A failed request or invalid response retains that server's last successful records and logs a warning; other servers can still update. A successful empty array removes that server's records. Before the first successful fetch, that server contributes no records. Records remain available throughout an outage. Refresh requests run sequentially, so a discovery cycle can take up to the configured timeout per API request, including the server list request when auto discovery is enabled. Initial discovery does not block DNS startup. If the server list request fails or returns invalid data, the plugin retains the previous list and continues refreshing those servers. A successful list removes records for departed auto-discovered servers; explicit servers remain configured.
+Dashboard publishing and any persisted discovery state are initialized during configuration. Application discovery refreshes in the background on startup and then periodically. Queries read an in-memory snapshot and never wait for HTTP. A failed request or invalid response retains that server's last successful records and logs a warning; other servers can still update. A successful empty array removes that server's records. Before the first successful fetch, that server contributes no records. Records remain available throughout an outage. Refresh requests run sequentially, so a discovery cycle can take up to the configured timeout per API request, including the server list request when auto discovery is enabled. Initial discovery does not block DNS startup. If the server list request fails or returns invalid data, the plugin retains the previous list and continues refreshing those servers. A successful list removes records for departed auto-discovered servers; explicit servers remain configured.
 
 Within one server, multiple addresses for the same name form an A/AAAA record set and duplicates are removed. Conflicting CNAME targets, CNAME/address combinations, and self aliases reject that server's refresh. If different servers contain the same name, the first explicit server with records for it takes precedence, followed by auto-discovered servers sorted by UUID. An explicit dashboard publish record takes precedence over all servers.
 
 Only names inside the CoreDNS server block's zones are answered. Unknown names always pass to the next plugin (usually `forward`). Known names with no requested record type return NOERROR with an empty answer. If no next plugin handles a missing name, CoreDNS returns SERVFAIL.
 
 `cache` can be added for upstream queries, but it can also retain Coolify answers until their TTL expires after a refresh removes or changes a record.
+
+## Persistence across restarts
+
+Add `persist /data/coolify.json` inside the `coolify` block to restore the last saved application records and auto-discovered server list immediately on startup. Coolify refreshes still run in the background. Records are stored per server, preserving explicit server precedence and allowing a failed server request to retain its records while other servers update. A failed server-list request uses the restored list to continue refreshing domains. Successful empty responses and server removals are persisted too.
+
+The cache has no age limit, matching the in-memory behavior during API outages: old records remain available until a successful refresh replaces or removes them. DNS `ttl` controls client caching, not the lifetime of this file. Dashboard `publish` records always come from the current configuration.
+
+The file is tied to the Coolify URL, API token, explicit server configuration (including order and overrides), auto-discovery setting, and DNS zones. Changing any of these causes the old file to be ignored. Tokens are never stored in plaintext; only a configuration digest is saved. Cache files are versioned, limited to 32 MiB, and validated before any data is restored. Missing files start with empty discovery state; unreadable, corrupt, or incompatible files log a warning and allow normal startup.
+
+Each refresh saves the resulting state, including partial successes, using a temporary file with mode `0600` and an atomic rename. Write failures log a warning while fresh DNS records remain available in memory. The parent directory must already exist and be writable by CoreDNS. Use a separate cache path for each `coolify` instance; do not share a file between running processes.
+
+For Docker Compose, mount a persistent directory on the CoreDNS service so the file survives container recreation:
+
+```yaml
+services:
+  coredns:
+    volumes:
+      - coredns-data:/data
+
+volumes:
+  coredns-data:
+```
+
+Ensure the mounted directory is writable by the CoreDNS container user. The standard CoreDNS `cache` plugin can still cache DNS responses, but does not replace this persisted discovery state.
+
+## Discovery logging
+
+Add `log_discovery` inside the `coolify` block to log discoveries:
+
+```text
+[INFO] plugin/coolify: discovered server "server-uuid-one"
+[INFO] plugin/coolify: discovered record app.example.com. A 192.0.2.10
+[INFO] plugin/coolify: discovered record alias.example.com. CNAME edge.example.net.
+```
+
+The first successful discovery logs the servers and records it adds. Later refreshes log only additions, including new targets for an existing name. Records are compared against the effective DNS snapshot after server precedence and dashboard overrides, and only names inside the configured zones are logged. Server logs reflect additions to the auto-discovered list; explicitly configured servers absent from that list do not generate server discovery logs.
+
+Unchanged refreshes, removals, and failed requests generate no discovery messages. A removed server or record is logged again if it reappears. Restored cache contents form the comparison baseline and are not logged as new discoveries on restart. This option is independent of `COOLIFY_DEBUG` and the CoreDNS query `log` plugin.
 
 ## Troubleshooting API requests
 
